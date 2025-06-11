@@ -1,19 +1,5 @@
 # Use Node.js 18 LTS
-FROM node:18-slim
-
-# Install Chrome dependencies for Puppeteer
-RUN apt-get update && apt-get install -y \
-    wget \
-    gnupg \
-    ca-certificates \
-    procps \
-    libxss1 \
-    && wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | apt-key add - \
-    && sh -c 'echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google.list' \
-    && apt-get update \
-    && apt-get install -y google-chrome-stable fonts-ipafont-gothic fonts-wqy-zenhei fonts-thai-tlwg fonts-kacst fonts-freefont-ttf libxss1 \
-    --no-install-recommends \
-    && rm -rf /var/lib/apt/lists/*
+FROM node:18-alpine
 
 # Set working directory
 WORKDIR /app
@@ -21,8 +7,11 @@ WORKDIR /app
 # Copy package files
 COPY package*.json ./
 
-# Install dependencies
-RUN npm ci --only=production
+# Set environment to skip Puppeteer download during install
+ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
+
+# Install dependencies including dev dependencies for build
+RUN npm ci
 
 # Copy source code
 COPY . .
@@ -30,15 +19,14 @@ COPY . .
 # Build TypeScript
 RUN npm run build
 
+# Remove dev dependencies
+RUN npm ci --only=production && npm cache clean --force
+
 # Create data directory for volume mount
 RUN mkdir -p /data
 
 # Expose port
 EXPOSE 3000
-
-# Set environment variables for Puppeteer
-ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
-ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/google-chrome-stable
 
 # Start the application
 CMD ["npm", "start"]
