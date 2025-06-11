@@ -1,5 +1,5 @@
 # fly.toml app configuration file generated for confluence-mcp
-app = "confluence-mcp"
+app = "confluence-mcp-chrism"
 primary_region = "iad"
 
 [build]

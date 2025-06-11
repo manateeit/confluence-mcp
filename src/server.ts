@@ -7,6 +7,86 @@ import { ConfluenceClient } from './services/confluence-client';
 import { MarkdownConverter } from './services/markdown-converter';
 import { MarkdownPageCache } from './utils/cache';
 import { ProjectConfigManager } from './utils/project-config';
+import crypto from 'crypto';
+
+// Security configuration
+const MCP_API_KEY = process.env.MCP_API_KEY;
+const RATE_LIMIT_WINDOW = 15 * 60 * 1000; // 15 minutes
+const RATE_LIMIT_MAX_REQUESTS = 100; // Max requests per window
+
+// Rate limiting store (in production, use Redis or similar)
+const rateLimitStore = new Map<string, { count: number; resetTime: number }>();
+
+// Authentication middleware
+function authenticateRequest(req: express.Request, res: express.Response, next: express.NextFunction) {
+  const apiKey = req.headers['x-mcp-api-key'] || req.query.apiKey;
+
+  if (!MCP_API_KEY) {
+    console.error('MCP_API_KEY not configured on server');
+    return res.status(500).json({ error: 'Server configuration error' });
+  }
+
+  if (!apiKey || apiKey !== MCP_API_KEY) {
+    console.warn('Unauthorized access attempt:', {
+      ip: req.ip,
+      userAgent: req.headers['user-agent'],
+      timestamp: new Date().toISOString()
+    });
+    return res.status(401).json({ error: 'Unauthorized: Invalid or missing API key' });
+  }
+
+  next();
+}
+
+// Rate limiting middleware
+function rateLimitMiddleware(req: express.Request, res: express.Response, next: express.NextFunction) {
+  const clientId = req.ip || 'unknown';
+  const now = Date.now();
+
+  // Clean up expired entries
+  for (const [key, value] of rateLimitStore.entries()) {
+    if (now > value.resetTime) {
+      rateLimitStore.delete(key);
+    }
+  }
+
+  const clientData = rateLimitStore.get(clientId);
+
+  if (!clientData) {
+    rateLimitStore.set(clientId, { count: 1, resetTime: now + RATE_LIMIT_WINDOW });
+    return next();
+  }
+
+  if (now > clientData.resetTime) {
+    rateLimitStore.set(clientId, { count: 1, resetTime: now + RATE_LIMIT_WINDOW });
+    return next();
+  }
+
+  if (clientData.count >= RATE_LIMIT_MAX_REQUESTS) {
+    return res.status(429).json({
+      error: 'Rate limit exceeded',
+      retryAfter: Math.ceil((clientData.resetTime - now) / 1000)
+    });
+  }
+
+  clientData.count++;
+  next();
+}
+
+// Security headers middleware
+function securityHeaders(req: express.Request, res: express.Response, next: express.NextFunction) {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('X-XSS-Protection', '1; mode=block');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  res.setHeader('Content-Security-Policy', "default-src 'self'");
+  next();
+}
+
+// Generate a secure session ID
+function generateSecureSessionId(): string {
+  return crypto.randomBytes(32).toString('hex');
+}
 
 // Create an MCP server instance with Confluence tools
 const getServer = () => {
@@ -537,32 +617,44 @@ const getServer = () => {
 
 export function startServer(port: number): void {
   const app = express();
-  app.use(express.json());
+
+  // Trust proxy for accurate IP addresses (important for Fly.io)
+  app.set('trust proxy', true);
+
+  // Apply security middleware
+  app.use(securityHeaders);
+  app.use(express.json({ limit: '10mb' })); // Limit payload size
+  app.use(rateLimitMiddleware);
 
   // Store transports by session ID
   const transports: Record<string, SSEServerTransport> = {};
 
-  // SSE endpoint for establishing the stream
-  app.get('/mcp', async (_req, res) => {
-    console.log('Received GET request to /mcp (establishing SSE stream)');
+  // SSE endpoint for establishing the stream (requires authentication)
+  app.get('/mcp', authenticateRequest, async (req, res) => {
+    console.log('Received authenticated GET request to /mcp (establishing SSE stream)');
     try {
+      // Generate a secure session ID
+      const secureSessionId = generateSecureSessionId();
+
       // Create a new SSE transport for the client
       const transport = new SSEServerTransport('/messages', res);
 
+      // Override the session ID with our secure one
+      (transport as any).sessionId = secureSessionId;
+
       // Store the transport by session ID
-      const sessionId = transport.sessionId;
-      transports[sessionId] = transport;
+      transports[secureSessionId] = transport;
 
       // Set up onclose handler to clean up transport when closed
       transport.onclose = () => {
-        console.log(`SSE transport closed for session ${sessionId}`);
-        delete transports[sessionId];
+        console.log(`SSE transport closed for session ${secureSessionId}`);
+        delete transports[secureSessionId];
       };
 
       // Connect the transport to the MCP server
       const server = getServer();
       await server.connect(transport);
-      console.log(`Established SSE stream with session ID: ${sessionId}`);
+      console.log(`Established SSE stream with session ID: ${secureSessionId}`);
     } catch (error) {
       console.error('Error establishing SSE stream:', error);
       if (!res.headersSent) {
@@ -571,9 +663,9 @@ export function startServer(port: number): void {
     }
   });
 
-  // Messages endpoint for receiving client JSON-RPC requests
-  app.post('/messages', async (req, res) => {
-    console.log('Received POST request to /messages');
+  // Messages endpoint for receiving client JSON-RPC requests (requires authentication)
+  app.post('/messages', authenticateRequest, async (req, res) => {
+    console.log('Received authenticated POST request to /messages');
 
     const sessionId = req.query.sessionId as string;
     if (!sessionId) {

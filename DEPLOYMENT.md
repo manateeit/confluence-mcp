@@ -1,6 +1,14 @@
 # Confluence MCP Deployment Guide
 
-This guide covers deploying the Confluence MCP server to Fly.io for production use.
+This guide covers deploying the Confluence MCP server to Fly.io for production use with enhanced security.
+
+## 🔒 Security Features
+
+- **API Key Authentication**: Unique MCP API key for server access
+- **Rate Limiting**: 100 requests per 15-minute window per IP
+- **Security Headers**: XSS protection, content type validation, frame denial
+- **Secure Session IDs**: Cryptographically secure session management
+- **Request Validation**: Input sanitization and size limits
 
 ## Prerequisites
 
@@ -54,60 +62,85 @@ Test the server:
 node simple-test.js
 ```
 
-## Production Deployment on Fly.io
+## 🚀 Quick Deployment (Recommended)
 
-### 1. Login to Fly.io
+### Automated Deployment Script
+
+The easiest way to deploy is using our automated script:
+
+```bash
+# Generate a secure API key and deploy in one step
+npm run deploy
+```
+
+This script will:
+1. ✅ Check Fly CLI installation and login status
+2. 🔐 Generate a secure MCP API key
+3. 📝 Prompt for your Confluence credentials
+4. 🏗️ Create or update your Fly.io app
+5. 💾 Set up persistent storage volume
+6. 🔒 Configure all secrets securely
+7. 🚀 Deploy your server
+8. 🧪 Test the deployment
+
+### Manual Deployment Steps
+
+If you prefer manual control:
+
+#### 1. Generate Secure API Key
+
+```bash
+npm run generate-key
+```
+
+Save the generated key securely - you'll need it for authentication.
+
+#### 2. Login to Fly.io
 
 ```bash
 fly auth login
 ```
 
-### 2. Initialize Fly App
+#### 3. Create and Configure App
 
 ```bash
-fly launch
+# Create app (replace 'your-app-name' with your preferred name)
+fly apps create your-app-name
+
+# Create persistent volume
+fly volumes create confluence_mcp_data --region iad --size 1 -a your-app-name
 ```
 
-This will:
-- Create a `fly.toml` configuration file (already provided)
-- Set up your app on Fly.io
-- Ask if you want to deploy immediately (say "no" for now)
-
-### 3. Set Production Secrets
+#### 4. Set Production Secrets
 
 ```bash
 # Set Confluence credentials
-fly secrets set CONFLUENCE_BASE_URL=https://your-domain.atlassian.net
-fly secrets set CONFLUENCE_USERNAME=your-email@domain.com
-fly secrets set CONFLUENCE_API_TOKEN=your-api-token
+fly secrets set CONFLUENCE_BASE_URL=https://your-domain.atlassian.net -a your-app-name
+fly secrets set CONFLUENCE_USERNAME=your-email@domain.com -a your-app-name
+fly secrets set CONFLUENCE_API_TOKEN=your-api-token -a your-app-name
 
-# Set MCP API key for security
-fly secrets set MCP_API_KEY=your-secure-random-key
+# Set MCP API key for security (use the key from step 1)
+fly secrets set MCP_API_KEY=your-generated-secure-key -a your-app-name
 
-# Optional: Set custom port (default is 3000)
-fly secrets set PORT=3000
+# Set port
+fly secrets set PORT=3000 -a your-app-name
 ```
 
-### 4. Create Volume for Cache
+#### 5. Deploy
 
 ```bash
-fly volumes create confluence_mcp_data --region iad --size 1
+npm run build
+fly deploy -a your-app-name
 ```
 
-### 5. Deploy
-
-```bash
-fly deploy
-```
-
-### 6. Verify Deployment
+#### 6. Verify Deployment
 
 ```bash
 # Check app status
-fly status
+fly status -a your-app-name
 
 # View logs
-fly logs
+fly logs -a your-app-name
 
 # Test health endpoint
 curl https://your-app-name.fly.dev/health
@@ -143,22 +176,66 @@ The `fly.toml` file includes:
 3. **Access Control**: Consider implementing IP restrictions if needed
 4. **Token Rotation**: Regularly rotate your Confluence API tokens
 
-## Usage with AI Assistants
+## 🔗 Using Your Deployed Server
 
-### Claude Desktop Configuration
+### Server Endpoints
 
-Add to your Claude Desktop MCP configuration:
+Your deployed server will be available at: `https://your-app-name.fly.dev`
+
+**Available endpoints:**
+- `GET /health` - Health check (no auth required)
+- `GET /mcp` - SSE connection for MCP protocol (requires API key)
+- `POST /messages` - MCP message handling (requires API key)
+
+### Authentication
+
+All MCP endpoints require authentication using your generated API key:
+
+**Header Authentication:**
+```bash
+curl -H "X-MCP-API-Key: your-api-key" https://your-app-name.fly.dev/mcp
+```
+
+**Query Parameter Authentication:**
+```bash
+curl "https://your-app-name.fly.dev/mcp?apiKey=your-api-key"
+```
+
+### AI Assistant Configuration
+
+#### For SSE-based MCP Clients
+
+Configure your AI assistant to connect to your deployed server:
 
 ```json
 {
   "mcpServers": {
     "confluence": {
+      "transport": "sse",
+      "url": "https://your-app-name.fly.dev/mcp",
+      "headers": {
+        "X-MCP-API-Key": "your-api-key"
+      }
+    }
+  }
+}
+```
+
+#### For Local Development/Testing
+
+You can still use the local version for development:
+
+```json
+{
+  "mcpServers": {
+    "confluence-local": {
       "command": "node",
       "args": ["/path/to/confluence-mcp/dist/index.js"],
       "env": {
         "CONFLUENCE_BASE_URL": "https://your-domain.atlassian.net",
         "CONFLUENCE_USERNAME": "your-email@domain.com",
-        "CONFLUENCE_API_TOKEN": "your-api-token"
+        "CONFLUENCE_API_TOKEN": "your-api-token",
+        "MCP_API_KEY": "your-api-key"
       }
     }
   }
